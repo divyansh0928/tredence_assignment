@@ -1,2 +1,4 @@
 __pycache__/
 venv/
+workflow_graphs.db
+__init__.py

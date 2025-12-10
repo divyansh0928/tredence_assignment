@@ -10,10 +10,10 @@ sys.path.insert(0, parent_dir)
 
 from graph_engine import GraphEngine
 from example_nodes import set_sample_code_node, analyze_code_node, report_results_node
+from app.database import save_graph, load_graph, list_graphs, delete_graph
 
 app = FastAPI(title="Workflow Engine API")
 
-GRAPHS: Dict[str, Dict[str, Any]] = {}
 RUNS: Dict[str, Dict[str, Any]] = {}
 
 NODE_REGISTRY: Dict[str, Any] = {
@@ -53,10 +53,18 @@ class GraphStateResponse(BaseModel):
     state: Dict[str, Any]
     log: Optional[List[StepLog]] = None
 
+class GraphInfo(BaseModel):
+    graph_id: str
+    nodes: List[str]
+    start_node: str
+    created_at: str
+
+class GraphListResponse(BaseModel):
+    graphs: List[GraphInfo]
+
 
 @app.post("/graph/create", response_model=GraphCreateResponse)
 def create_graph(req: GraphCreateRequest):
-    """Create a new graph with specified nodes and edges."""
     engine = GraphEngine()
     
     for node_name in req.nodes:
@@ -71,15 +79,19 @@ def create_graph(req: GraphCreateRequest):
         raise HTTPException(status_code=400, detail=f"Start node '{req.start_node}' not in nodes list")
     
     graph_id = str(uuid.uuid4())
-    GRAPHS[graph_id] = {"engine": engine, "start_node": req.start_node}
+    
+    edges_dict = [{"from_node": edge.from_node, "to_node": edge.to_node} for edge in req.edges]
+    success = save_graph(graph_id, req.nodes, edges_dict, req.start_node, engine)
+    
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to save graph to database")
     
     return GraphCreateResponse(graph_id=graph_id)
 
 
 @app.post("/graph/run", response_model=GraphRunResponse)
 def run_graph(req: GraphRunRequest):
-    """Execute a graph with given initial state."""
-    graph_data = GRAPHS.get(req.graph_id)
+    graph_data = load_graph(req.graph_id, NODE_REGISTRY)
     if graph_data is None:
         raise HTTPException(status_code=404, detail="Graph not found")
     
@@ -107,7 +119,6 @@ def run_graph(req: GraphRunRequest):
 
 @app.get("/graph/state/{run_id}", response_model=GraphStateResponse)
 def get_graph_state(run_id: str):
-    """Get the state and execution log for a completed run."""
     run_data = RUNS.get(run_id)
     if run_data is None:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -124,11 +135,44 @@ def get_graph_state(run_id: str):
 
 @app.get("/")
 def root():
-    """Health check endpoint."""
     return {"message": "Workflow Engine API is running"}
 
 
 @app.get("/nodes")
 def list_nodes():
-    """List all available node types."""
     return {"available_nodes": list(NODE_REGISTRY.keys())}
+
+@app.get("/graphs", response_model=GraphListResponse)
+def list_all_graphs():
+    graphs = list_graphs()
+    graph_infos = [
+        GraphInfo(
+            graph_id=graph["graph_id"],
+            nodes=graph["nodes"],
+            start_node=graph["start_node"],
+            created_at=graph["created_at"]
+        )
+        for graph in graphs
+    ]
+    return GraphListResponse(graphs=graph_infos)
+
+@app.get("/graph/{graph_id}")
+def get_graph_info(graph_id: str):
+    graph_data = load_graph(graph_id, NODE_REGISTRY)
+    if graph_data is None:
+        raise HTTPException(status_code=404, detail="Graph not found")
+    
+    return {
+        "graph_id": graph_id,
+        "nodes": graph_data["nodes"],
+        "edges": graph_data["edges"],
+        "start_node": graph_data["start_node"]
+    }
+
+@app.delete("/graph/{graph_id}")
+def delete_graph_endpoint(graph_id: str):
+    success = delete_graph(graph_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Graph not found")
+    
+    return {"message": f"Graph {graph_id} deleted successfully"}
