@@ -6,12 +6,14 @@ import sys
 import os
 import json
 import asyncio
+from datetime import datetime
 
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 
 from graph_engine import GraphEngine
 from app.database import save_graph, load_graph, list_graphs, delete_graph
+from app.async_executor import async_executor, ExecutionStatus
 
 app = FastAPI(title="Workflow Engine API")
 
@@ -39,10 +41,63 @@ def test_node_3(state):
     state["final_result"] = f"Processed {state.get('counter', 0)} items"
     return state
 
+async def long_running_analysis(state):
+    print("Starting long-running analysis...")
+    state["analysis_status"] = "started"
+    
+    for i in range(5):
+        await asyncio.sleep(2)  # Simulate 2 seconds of work
+        progress = (i + 1) * 20
+        state["analysis_progress"] = f"{progress}%"
+        print(f"Analysis progress: {progress}%")
+    
+    state["analysis_status"] = "completed"
+    state["analysis_result"] = "Complex analysis completed successfully"
+    state["processing_time"] = "10 seconds"
+    return state
+
+async def async_data_processing(state):
+    print("Processing data asynchronously...")
+    state["processing_status"] = "running"
+    
+    tasks = []
+    for i in range(3):
+        task = asyncio.create_task(simulate_api_call(f"dataset_{i}"))
+        tasks.append(task)
+    
+    results = await asyncio.gather(*tasks)
+    
+    state["processed_datasets"] = results
+    state["processing_status"] = "completed"
+    state["total_records"] = sum(len(result) for result in results)
+    return state
+
+async def simulate_api_call(dataset_name: str):
+    await asyncio.sleep(1.5)
+    return [f"{dataset_name}_record_{i}" for i in range(10)]
+
+def heavy_computation(state):
+    import time
+    print("Starting heavy computation...")
+    
+    start_time = time.time()
+    result = 0
+    for i in range(1000000):
+        result += i * i
+    
+    processing_time = time.time() - start_time
+    state["computation_result"] = result
+    state["computation_time"] = f"{processing_time:.2f} seconds"
+    state["computation_status"] = "completed"
+    return state
+
 NODE_REGISTRY: Dict[str, Any] = {
     "test_node_1": test_node_1,
     "test_node_2": test_node_2,
     "test_node_3": test_node_3,
+    "long_running_analysis": long_running_analysis,
+    "async_data_processing": async_data_processing,
+    "heavy_computation": heavy_computation,
 }
 
 class EdgeSpec(BaseModel):
@@ -96,6 +151,33 @@ class StreamLogMessage(BaseModel):
     state: Optional[Dict[str, Any]] = None
     final_state: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+
+class AsyncRunRequest(BaseModel):
+    graph_id: str
+    initial_state: Dict[str, Any] = {}
+
+class AsyncRunResponse(BaseModel):
+    execution_id: str
+    status: str
+    message: str
+
+class AsyncExecutionResponse(BaseModel):
+    execution_id: str
+    graph_id: str
+    status: str
+    current_node: Optional[str] = None
+    current_state: Dict[str, Any] = {}
+    final_state: Optional[Dict[str, Any]] = None
+    log: List[Dict[str, Any]] = []
+    error: Optional[str] = None
+    created_at: str
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    progress: int = 0
+
+class ExecutionListResponse(BaseModel):
+    executions: List[AsyncExecutionResponse]
+    total: int
 
 
 @app.post("/graph/create", response_model=GraphCreateResponse)
@@ -211,6 +293,64 @@ def delete_graph_endpoint(graph_id: str):
         raise HTTPException(status_code=404, detail="Graph not found")
     
     return {"message": f"Graph {graph_id} deleted successfully"}
+
+@app.post("/graph/run/async", response_model=AsyncRunResponse)
+async def run_graph_async(req: AsyncRunRequest):
+    try:
+        execution_id = await async_executor.start_execution(
+            req.graph_id,
+            req.initial_state,
+            lambda graph_id, node_registry: load_graph(graph_id, node_registry),
+            NODE_REGISTRY
+        )
+        
+        return AsyncRunResponse(
+            execution_id=execution_id,
+            status="started",
+            message="Async execution started successfully"
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/execution/{execution_id}", response_model=AsyncExecutionResponse)
+async def get_execution_status(execution_id: str):
+    execution = async_executor.get_execution(execution_id)
+    if not execution:
+        raise HTTPException(status_code=404, detail="Execution not found")
+    
+    data = execution.to_dict()
+    return AsyncExecutionResponse(**data)
+
+@app.get("/executions", response_model=ExecutionListResponse)
+async def list_executions(status: Optional[str] = None, limit: int = 50):
+    status_filter = None
+    if status:
+        try:
+            status_filter = ExecutionStatus(status)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
+    
+    executions = async_executor.list_executions(status_filter)[:limit]
+    execution_responses = [AsyncExecutionResponse(**exec.to_dict()) for exec in executions]
+    
+    return ExecutionListResponse(
+        executions=execution_responses,
+        total=len(execution_responses)
+    )
+
+@app.post("/execution/{execution_id}/cancel")
+async def cancel_execution(execution_id: str):
+    success = await async_executor.cancel_execution(execution_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Execution not found or cannot be cancelled")
+    
+    return {"message": f"Execution {execution_id} cancelled successfully"}
+
+@app.delete("/executions/cleanup")
+async def cleanup_executions(max_age_hours: int = 24):
+    cleaned_count = async_executor.cleanup_completed(max_age_hours)
+    return {"message": f"Cleaned up {cleaned_count} old executions"}
 
 async def run_graph_streaming(graph_id: str, initial_state: Dict[str, Any], websocket: WebSocket) -> str:
     run_id = str(uuid.uuid4())
@@ -333,6 +473,67 @@ async def websocket_run_graph(websocket: WebSocket):
         print("WebSocket client disconnected")
     except Exception as e:
         print(f"WebSocket error: {e}")
+        try:
+            await websocket.close()
+        except:
+            pass
+
+@app.websocket("/ws/execution/{execution_id}")
+async def websocket_execution_monitor(websocket: WebSocket, execution_id: str):
+    await websocket.accept()
+    
+    try:
+        execution = async_executor.get_execution(execution_id)
+        if not execution:
+            await websocket.send_text(json.dumps({
+                "type": "error",
+                "message": "Execution not found"
+            }))
+            await websocket.close()
+            return
+        
+        async def progress_callback(exec_id: str, event_type: str, node: str, state: Dict[str, Any]):
+            if exec_id == execution_id:
+                message = {
+                    "type": "progress",
+                    "execution_id": exec_id,
+                    "event_type": event_type,
+                    "node": node,
+                    "state": state,
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+                try:
+                    await websocket.send_text(json.dumps(message))
+                except:
+                    pass
+        
+        execution.add_progress_callback(progress_callback)
+        
+        await websocket.send_text(json.dumps({
+            "type": "status",
+            "execution": execution.to_dict()
+        }))
+        
+        while execution.status in [ExecutionStatus.PENDING, ExecutionStatus.RUNNING]:
+            await asyncio.sleep(1)
+            
+            await websocket.send_text(json.dumps({
+                "type": "status_update",
+                "execution_id": execution_id,
+                "status": execution.status.value,
+                "current_node": execution.current_node,
+                "progress": len(execution.log)
+            }))
+        
+        await websocket.send_text(json.dumps({
+            "type": "completed",
+            "execution": execution.to_dict()
+        }))
+        
+    except WebSocketDisconnect:
+        print(f"WebSocket client disconnected from execution {execution_id}")
+    except Exception as e:
+        print(f"WebSocket error for execution {execution_id}: {e}")
         try:
             await websocket.close()
         except:
