@@ -37,7 +37,7 @@ class GraphEngine:
         self.branch_conditions[from_node].append((condition_func, target_node))
         print(f"Added branch: {from_node} -> {target_node} (conditional)")
     
-    def run(self, start_node, state):
+    def run(self, start_node, state, log=None):
         """Execute nodes sequentially starting from start_node."""
         if start_node not in self.nodes:
             raise ValueError(f"Start node '{start_node}' not found")
@@ -49,6 +49,9 @@ class GraphEngine:
             
             func = self.nodes[current_node]
             state = func(state)
+            
+            if log is not None:
+                log.append({"node": current_node, "state": dict(state)})
             
             print(f"State after {current_node}: {state}")
             
