@@ -9,7 +9,6 @@ parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 
 from graph_engine import GraphEngine
-from example_nodes import set_sample_code_node, analyze_code_node, report_results_node
 from app.database import save_graph, load_graph, list_graphs, delete_graph
 
 app = FastAPI(title="Workflow Engine API")
@@ -17,9 +16,8 @@ app = FastAPI(title="Workflow Engine API")
 RUNS: Dict[str, Dict[str, Any]] = {}
 
 NODE_REGISTRY: Dict[str, Any] = {
-    "set_sample_code": set_sample_code_node,
-    "analyze_code": analyze_code_node,
-    "report_results": report_results_node,
+    # Node functions can be registered here
+    # Example: "node_name": node_function,
 }
 
 class EdgeSpec(BaseModel):
