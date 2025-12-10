@@ -3,7 +3,7 @@ class GraphEngine:
     def __init__(self):
         self.nodes = {}
         self.edges = {}
-        self.branch_conditions = {}  # node_name -> list of (condition_func, target_node)
+        self.branch_conditions = {}
     
     def add_node(self, name, func):
         """Register a node function with a given name."""
@@ -47,16 +47,13 @@ class GraphEngine:
         while current_node:
             print(f"\nExecuting node: {current_node}")
             
-            # Execute the current node function
             func = self.nodes[current_node]
             state = func(state)
             
             print(f"State after {current_node}: {state}")
             
-            # Determine next node: check branch conditions first, then fallback to edges
             next_node = None
             
-            # Check branch conditions if they exist for current node
             if current_node in self.branch_conditions:
                 for condition_func, target_node in self.branch_conditions[current_node]:
                     if condition_func(state):
@@ -64,7 +61,6 @@ class GraphEngine:
                         print(f"  Branch condition met: {current_node} -> {target_node}")
                         break
             
-            # If no branch condition matched, use regular edges
             if next_node is None:
                 next_node = self.edges.get(current_node)
                 if next_node:
