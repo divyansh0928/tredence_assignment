@@ -14,6 +14,7 @@ sys.path.insert(0, parent_dir)
 from graph_engine import GraphEngine
 from app.database import save_graph, load_graph, list_graphs, delete_graph
 from app.async_executor import async_executor, ExecutionStatus
+from complete_data_quality_demo import DATA_QUALITY_NODES
 
 app = FastAPI(title="Workflow Engine API")
 
@@ -98,6 +99,7 @@ NODE_REGISTRY: Dict[str, Any] = {
     "long_running_analysis": long_running_analysis,
     "async_data_processing": async_data_processing,
     "heavy_computation": heavy_computation,
+    **DATA_QUALITY_NODES,
 }
 
 class EdgeSpec(BaseModel):
